@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Center Copilot</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTUiIGZpbGw9IiMyNTYzZWIiLz48cGF0aCBmaWxsPSIjZmZmIiBkPSJtMTYgNyAyIDcgNyAyLTcgMi0yIDctMi03LTctMiA3LTJaIi8+PC9zdmc+" />
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/vs2015.min.css">
+  <style>
+    body { margin-bottom: 50vh; }
+    .narrative { max-inline-size: 50rem; }
+    .transcript-pane { height: 300px; overflow-y: auto; background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-radius: 0.375rem; padding: 1rem; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.9rem; }
+    .transcript-line { margin-bottom: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.25rem; animation: slideIn 0.3s ease-out; }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+    .transcript-line.partial { opacity: 0.6; font-style: italic; }
+    .transcript-line.final { opacity: 1; }
+    .transcript-line.mic { background-color: rgba(13, 110, 253, 0.1); border-left: 3px solid #0d6efd; }
+    .transcript-line.speaker { background-color: rgba(25, 135, 84, 0.1); border-left: 3px solid #198754; }
+    .transcript-line.translation { background-color: rgba(25, 135, 84, 0.1); border-left: 3px solid #198754; }
+    .speak-btn { font-size: 0.75rem; padding: 0.125rem 0.375rem; vertical-align: middle; }
+    .timestamp { color: var(--bs-secondary-color); font-size: 0.75rem; margin-right: 0.5rem; }
+    .qa-message { margin-bottom: 1rem; padding: 0.75rem; border-radius: 0.375rem; }
+    .qa-question { background-color: rgba(13, 110, 253, 0.1); border-left: 3px solid #0d6efd; }
+    .qa-answer { background-color: var(--bs-secondary-bg); border-left: 3px solid var(--bs-secondary); }
+    .citation { background-color: rgba(255, 193, 7, 0.2); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; margin-top: 0.5rem; font-style: italic; }
+    .suggestion-item { padding: 0.5rem; margin-bottom: 0.5rem; background-color: var(--bs-secondary-bg); border-radius: 0.25rem; border-left: 3px solid #0dcaf0; }
+    .log-console { height: 150px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', monospace; font-size: 0.8rem; padding: 0.5rem; border-radius: 0.375rem; }
+    .log-entry { margin-bottom: 0.25rem; }
+    .log-error { color: #f48771; }
+    .log-warn { color: #dcdcaa; }
+    .log-info { color: #4fc1ff; }
+    .log-success { color: #6a9955; }
+    [data-bs-theme="dark"] .log-console { background: #0d1117; border: 1px solid var(--bs-border-color); }
+  </style>
+</head>
+
+<body>
+  <nav class="navbar navbar-expand-lg bg-body-tertiary" data-bs-theme="dark">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="."><i class="bi bi-headset me-2"></i>Call Center Copilot</a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarSupportedContent">
+        <div class="nav-item dropdown ms-auto" role="group" aria-label="Toggle dark mode" title="Toggle Dark Mode">
+          <button class="dark-theme-toggle btn btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Toggle theme (auto)">
+            <i class="bi bi-circle-half"></i> <span class="d-lg-none ms-2">Toggle theme</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><button class="dropdown-item" data-bs-theme-value="light"><i class="me-2 bi bi-sun-fill"></i> Light</button></li>
+            <li><button class="dropdown-item" data-bs-theme-value="dark"><i class="me-2 bi bi-moon-stars-fill"></i> Dark</button></li>
+            <li><button class="dropdown-item" data-bs-theme-value="auto"><i class="me-2 bi bi-circle-half"></i> Auto</button></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container mt-4">
+    <h1 class="display-1 my-4 text-center">Call Center Copilot</h1>
+    <h2 class="display-6 text-center">Real-time transcription with <em>AI translation</em></h2>
+    <div class="mx-auto my-3 narrative">
+      <p class="mb-2">Capture and transcribe agent voice with real-time translation to multiple languages.</p>
+      <ul class="mb-0">
+        <li>Microphone audio capture with real-time transcription</li>
+        <li>Auto-detect agent language and translate to 12 languages</li>
+        <li>Text-to-speech for translated content</li>
+        <li>Q&A grounded in conversation transcript</li>
+        <li>Automatic summaries and response suggestions</li>
+      </ul>
+    </div>
+
+    <div class="accordion my-4" id="advanced-accordion">
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="advanced-heading">
+          <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#advanced-settings" aria-expanded="false" aria-controls="advanced-settings">
+            <i class="bi bi-sliders2 me-2"></i> Advanced Settings
+          </button>
+        </h2>
+        <div id="advanced-settings" class="accordion-collapse collapse" aria-labelledby="advanced-heading" data-bs-parent="#advanced-accordion">
+          <div class="accordion-body">
+            <div class="row mb-3">
+              <div class="col-md-6">
+                <label for="model-select" class="form-label">Realtime Model</label>
+                <select id="model-select" class="form-select">
+                  <option value="gpt-realtime-mini" selected>GPT Realtime Mini</option>
+                  <option value="gpt-realtime">GPT Realtime</option>
+                  <option value="gpt-4o-mini-realtime-preview-2024-12-17">GPT-4o-mini Realtime</option>
+                  <option value="gpt-4o-realtime-preview-2024-12-17" >GPT-4o Realtime</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label for="qa-model" class="form-label">Q&A Model</label>
+                <select id="qa-model" class="form-select">
+                  <option value="gpt-4o">gpt-4o</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4-turbo">gpt-4-turbo</option>
+                </select>
+              </div>
+            </div>
+            <div class="row mb-3">
+              <div class="col-md-6">
+                <label for="language-select" class="form-label">Translation Language</label>
+                <select id="language-select" class="form-select">
+                  <option value="en" selected>English</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="it">Italian</option>
+                  <option value="pt">Portuguese</option>
+                  <option value="ru">Russian</option>
+                  <option value="ja">Japanese</option>
+                  <option value="ko">Korean</option>
+                  <option value="zh">Chinese</option>
+                  <option value="hi">Hindi</option>
+                  <option value="nl">Dutch</option>
+                </select>
+              </div>
+            </div>
+            <div class="row mb-3">
+              <div class="col">
+                <button id="config-btn" class="btn btn-outline-primary"><i class="bi bi-gear me-1"></i> Config OpenAI</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-play-circle me-2"></i>Connection Control</h5>
+      </div>
+      <div class="card-body">
+        <div class="row mb-3">
+          <div class="col-md-12">
+            <div class="btn-group mb-3" role="group">
+              <button id="startMicBtn" class="btn btn-primary"><i class="bi bi-mic"></i> Start Microphone</button>
+              <button id="stopAllBtn" class="btn btn-danger"><i class="bi bi-stop-circle"></i> Stop</button>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-md-6">
+            <strong>Mic Status:</strong>
+            <span id="micStatus" class="badge bg-secondary ms-2">Disconnected</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-file-text me-2"></i>Live Transcripts</h5>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="text-primary mb-0"><i class="bi bi-mic"></i> Agent (Original)</h6>
+              <button id="clearMicBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
+            </div>
+            <div id="micTranscript" class="transcript-pane"></div>
+          </div>
+          <div class="col-md-6">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="text-success mb-0"><i class="bi bi-translate"></i> Translation</h6>
+              <button id="clearTranslationBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
+            </div>
+            <div id="translationTranscript" class="transcript-pane"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-chat-square-quote me-2"></i>Q&A (Transcript-Grounded)</h5>
+      </div>
+      <div class="card-body">
+        <div class="input-group mb-3">
+          <textarea id="questionInput" class="form-control" rows="2" placeholder="Ask a question about the conversation..."></textarea>
+          <button id="askBtn" class="btn btn-primary"><i class="bi bi-send"></i> Ask</button>
+        </div>
+        <div id="qaContainer" style="max-height: 400px; overflow-y: auto;"></div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-magic me-2"></i>Auto-Assist</h5>
+      </div>
+      <div class="card-body">
+        <div class="row mb-3">
+          <div class="col-md-6">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="enableSummaryToggle">
+              <label class="form-check-label" for="enableSummaryToggle">
+                Enable 2-minute summaries
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <h6><i class="bi bi-file-text"></i> Running Summary</h6>
+          <div id="summaryContent" class="p-3 bg-body-secondary rounded text-muted">
+            Summary will appear here every 2 minutes...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-terminal me-2"></i>Debug Console</h5>
+      </div>
+      <div class="card-body">
+        <div id="logConsole" class="log-console"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@gramex/ui@0.3.1/dist/dark-theme.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script type="module" src="script.js"></script>
+</body>
+
+</html>
