@@ -253,7 +253,16 @@ function handleRealtimeEvent(channel, event) {
       const ws = APP_STATE[`${channel}Socket`];
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
     },
-    'error': () => { Logger.error(`${channel} error: ${event.error?.message}`); bootstrapAlert({ body: `${channel} error: ${event.error?.message}`, color: 'danger' }); }
+    'error': () => { 
+      const errorMsg = event.error?.message || '';
+      // Ignore buffer too small errors (common and harmless)
+      if (errorMsg.includes('buffer too small') || errorMsg.includes('Expected at least 100ms')) {
+        Logger.info(`${channel}: Skipping small audio buffer (normal behavior)`);
+        return;
+      }
+      Logger.error(`${channel} error: ${errorMsg}`); 
+      bootstrapAlert({ body: `${channel} error: ${errorMsg}`, color: 'danger' }); 
+    }
   };
   
   handlers[type]?.();
