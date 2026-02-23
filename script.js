@@ -3,20 +3,17 @@ import { bootstrapAlert } from "https://cdn.jsdelivr.net/npm/bootstrap-alert@1";
 
 const APP_STATE = {
   apiKey: null, baseUrl: 'https://api.openai.com/v1', model: 'gpt-realtime-mini', qaModel: 'gpt-4o',
-  micStream: null, micSocket: null,
-  audioContext: null, micProcessor: null,
-  micSessionId: null,
+  micStream: null, speakerStream: null, micSocket: null, speakerSocket: null,
+  audioContext: null, micProcessor: null, speakerProcessor: null,
+  micSessionId: null, speakerSessionId: null,
   transcript: { segments: [] },
-  summaryInterval: null, enableSummary: false,
-  targetLanguage: 'en',
-  translations: new Map(),
-  speechSynthesis: window.speechSynthesis,
-  detectedLanguage: null
+  summaryInterval: null, lastCustomerSpeechTime: null, enableSummary: false, enableSuggestions: false,
+  processingCustomerSuggestion: false
 };
 
 const $ = id => document.getElementById(id);
 const escapeHtml = text => { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; };
-const getTranscriptText = () => APP_STATE.transcript.segments.map(s => `AGENT: ${s.text}`).join('\n');
+const getTranscriptText = () => APP_STATE.transcript.segments.map(s => `${s.channel === 'mic' ? 'AGENT' : 'CUSTOMER'}: ${s.text}`).join('\n');
 
 class Logger {
   static log(msg, type = 'info') {
@@ -88,90 +85,45 @@ async function startMicCapture() {
   }
 }
 
-async function detectAndTranslateText(text, targetLang) {
+async function startSpeakerCapture() {
   try {
-    const response = await fetch(`${APP_STATE.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${await getAuthToken()}` },
-      body: JSON.stringify({
-        model: APP_STATE.qaModel,
-        messages: [
-          { role: 'system', content: `You are a professional translator. First detect the language of the input text, then translate it to ${getLanguageName(targetLang)}. Return ONLY a JSON object with this format: {"detected_language": "language_code", "translation": "translated text"}. Use ISO 639-1 language codes (en, es, fr, de, etc.).` },
-          { role: 'user', content: text }
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3
-      })
-    });
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
+    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('getDisplayMedia not supported in this browser. Try Chrome, Edge, or Firefox.');
+    Logger.info('Requesting speaker/tab audio capture...');
+    Logger.warn('IMPORTANT: Select your Google Meet tab/window and enable "Share audio" checkbox');
+    bootstrapAlert({ body: '📢 Important: Select your Google Meet tab and check "Share tab audio" or "Share system audio"', color: 'info' });
     
-    if (result.detected_language && result.detected_language !== APP_STATE.detectedLanguage) {
-      APP_STATE.detectedLanguage = result.detected_language;
-      Logger.info(`Detected agent language: ${getLanguageName(result.detected_language) || result.detected_language}`);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: { width: 1, height: 1, frameRate: 1 } });
+    } catch (e1) {
+      Logger.warn('First attempt failed, trying audio-only request...');
+      stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
     }
     
-    return result.translation || text;
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      stream.getTracks().forEach(track => track.stop());
+      throw new Error('No audio track in captured stream. Make sure to enable "Share tab audio" or "Share system audio" checkbox in the browser dialog.');
+    }
+    
+    stream.getVideoTracks().forEach(track => { track.stop(); stream.removeTrack(track); });
+    Logger.success(`Speaker audio captured successfully (${audioTracks.length} audio track(s))`);
+    APP_STATE.speakerStream = stream;
+    updateStatus('speaker', 'Captured', 'warning');
+    audioTracks[0].addEventListener('ended', () => { Logger.warn('Speaker capture ended by user'); stopChannel('speaker'); });
+    await connectRealtimeAPI('speaker', stream);
+    return stream;
   } catch (error) {
-    Logger.error(`Translation failed: ${error.message}`);
-    return text;
+    Logger.error(`Speaker capture failed: ${error.message}`);
+    updateStatus('speaker', 'Error', 'danger');
+    const errorMsgs = {
+      NotAllowedError: 'Screen sharing was denied. Please click "Start Speaker" again and allow screen sharing, then check "Share audio".',
+      NotSupportedError: 'Screen audio capture is not supported in this browser. Please use Chrome, Edge (Chromium), or Firefox.',
+      NotFoundError: 'No audio source found. Make sure to check "Share tab audio" or "Share system audio" in the screen sharing dialog.'
+    };
+    bootstrapAlert({ body: errorMsgs[error.name] || `Speaker capture failed: ${error.message}`, color: errorMsgs[error.name] ? 'warning' : 'danger' });
+    throw error;
   }
-}
-
-function getLanguageName(code) {
-  const languages = {
-    'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'it': 'Italian',
-    'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
-    'zh': 'Chinese', 'hi': 'Hindi', 'nl': 'Dutch'
-  };
-  return languages[code] || code;
-}
-
-function getLanguageCode(code) {
-  const langCodes = {
-    'en': 'en-US', 'es': 'es-ES', 'fr': 'fr-FR', 'de': 'de-DE', 'it': 'it-IT',
-    'pt': 'pt-PT', 'ru': 'ru-RU', 'ja': 'ja-JP', 'ko': 'ko-KR',
-    'zh': 'zh-CN', 'hi': 'hi-IN', 'nl': 'nl-NL'
-  };
-  return langCodes[code] || 'en-US';
-}
-
-function speakText(text, lang) {
-  if (!APP_STATE.speechSynthesis) {
-    Logger.error('Speech synthesis not supported');
-    bootstrapAlert({ body: 'Text-to-speech is not supported in your browser', color: 'warning' });
-    return;
-  }
-  
-  APP_STATE.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  const fullLangCode = getLanguageCode(lang);
-  utterance.lang = fullLangCode;
-  utterance.rate = 0.9;
-  utterance.pitch = 1;
-  utterance.volume = 1;
-  
-  const voices = APP_STATE.speechSynthesis.getVoices();
-  const voice = voices.find(v => v.lang === fullLangCode) || voices.find(v => v.lang.startsWith(lang));
-  if (voice) {
-    utterance.voice = voice;
-    Logger.info(`Using voice: ${voice.name} (${voice.lang})`);
-  } else {
-    Logger.warn(`No voice found for ${fullLangCode}, using default`);
-  }
-  
-  utterance.onerror = (e) => {
-    Logger.error(`Speech synthesis error: ${e.error}`);
-    bootstrapAlert({ body: `Speech error: ${e.error}`, color: 'danger' });
-  };
-  
-  utterance.onend = () => {
-    Logger.success('Speech completed');
-  };
-  
-  APP_STATE.speechSynthesis.speak(utterance);
-  Logger.info(`Speaking in ${fullLangCode}: "${text.substring(0, 50)}..."`);
 }
 
 async function connectRealtimeAPI(channel, mediaStream) {
@@ -188,7 +140,7 @@ async function connectRealtimeAPI(channel, mediaStream) {
         type: 'session.update',
         session: {
           modalities: ['text', 'audio'],
-          instructions: `You are transcribing the call center agent's voice. Provide accurate transcription.`,
+          instructions: `You are transcribing the ${channel === 'mic' ? "call center agent's" : "customer's"} voice. Provide accurate transcription.`,
           voice: 'alloy', input_audio_format: 'pcm16', output_audio_format: 'pcm16',
           input_audio_transcription: { model: 'whisper-1' },
           turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
@@ -252,34 +204,23 @@ function handleRealtimeEvent(channel, event) {
       updateStatus(channel, 'Connected', 'success');
       const ws = APP_STATE[`${channel}Socket`];
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-    },
-    'error': () => { 
-      const errorMsg = event.error?.message || '';
-      // Ignore buffer too small errors (common and harmless)
-      if (errorMsg.includes('buffer too small') || errorMsg.includes('Expected at least 100ms')) {
-        Logger.info(`${channel}: Skipping small audio buffer (normal behavior)`);
-        return;
+      if (channel === 'speaker' && APP_STATE.enableSuggestions) {
+        APP_STATE.lastCustomerSpeechTime = Date.now();
+        setTimeout(() => generateCustomerSuggestions(), 1000);
       }
-      Logger.error(`${channel} error: ${errorMsg}`); 
-      bootstrapAlert({ body: `${channel} error: ${errorMsg}`, color: 'danger' }); 
-    }
+    },
+    'error': () => { Logger.error(`${channel} error: ${event.error?.message}`); bootstrapAlert({ body: `${channel} error: ${event.error?.message}`, color: 'danger' }); }
   };
   
   handlers[type]?.();
 }
 
-async function handleTranscription(channel, event, isFinal) {
+function handleTranscription(channel, event, isFinal) {
   if (!event.transcript?.trim()) return;
   const segment = { channel, ts: new Date().toISOString(), text: event.transcript, item_id: event.item_id, final: isFinal };
   APP_STATE.transcript.segments.push(segment);
   displayTranscriptSegment(segment);
   Logger.success(`${channel} transcription: "${event.transcript}"`);
-  
-  if (isFinal && channel === 'mic') {
-    const translation = await detectAndTranslateText(event.transcript, APP_STATE.targetLanguage);
-    APP_STATE.translations.set(event.item_id, translation);
-    displayTranslation(segment, translation);
-  }
 }
 
 function displayTranscriptSegment(segment) {
@@ -292,61 +233,15 @@ function displayTranscriptSegment(segment) {
   container.scrollTop = container.scrollHeight;
 }
 
-function displayTranslation(segment, translation) {
-  const container = $('translationTranscript');
-  const line = document.createElement('div');
-  line.className = 'transcript-line translation final';
-  line.dataset.itemId = segment.item_id;
-  
-  const timestamp = document.createElement('span');
-  timestamp.className = 'timestamp';
-  timestamp.textContent = new Date(segment.ts).toLocaleTimeString();
-  
-  const textSpan = document.createElement('span');
-  textSpan.className = 'text';
-  textSpan.textContent = translation;
-  
-  const speakBtn = document.createElement('button');
-  speakBtn.className = 'btn btn-sm btn-outline-primary ms-2 speak-btn';
-  speakBtn.innerHTML = '<i class="bi bi-volume-up"></i>';
-  speakBtn.onclick = () => speakText(translation, APP_STATE.targetLanguage);
-  
-  line.appendChild(timestamp);
-  line.appendChild(textSpan);
-  line.appendChild(speakBtn);
-  
-  container.appendChild(line);
-  container.scrollTop = container.scrollHeight;
-}
-
 function clearTranscript(channel) {
   if (channel === 'all') {
     APP_STATE.transcript.segments = [];
-    APP_STATE.translations.clear();
-    $('micTranscript').innerHTML = '';
-    $('translationTranscript').innerHTML = '';
-  } else if (channel === 'mic') {
+    $('micTranscript').innerHTML = $('speakerTranscript').innerHTML = '';
+  } else {
     APP_STATE.transcript.segments = APP_STATE.transcript.segments.filter(s => s.channel !== channel);
-    APP_STATE.translations.clear();
     $(`${channel}Transcript`).innerHTML = '';
-    $('translationTranscript').innerHTML = '';
-  } else if (channel === 'translation') {
-    APP_STATE.translations.clear();
-    $('translationTranscript').innerHTML = '';
   }
   Logger.info(`Cleared ${channel} transcript`);
-}
-
-function changeLanguage(lang) {
-  APP_STATE.targetLanguage = lang;
-  Logger.info(`Translation language changed to ${getLanguageName(lang)}`);
-  clearTranscript('translation');
-  
-  APP_STATE.transcript.segments.filter(s => s.channel === 'mic' && s.final).forEach(async segment => {
-    const translation = await detectAndTranslateText(segment.text, lang);
-    APP_STATE.translations.set(segment.item_id, translation);
-    displayTranslation(segment, translation);
-  });
 }
 
 async function askQuestion(question) {
@@ -418,6 +313,8 @@ function toggleSummary(enabled) {
   }
 }
 
+const toggleSuggestions = enabled => { APP_STATE.enableSuggestions = enabled; Logger.info(`Customer suggestions ${enabled ? 'enabled' : 'disabled'}`); };
+
 async function generateSummary() {
   try {
     Logger.info('Generating 2-minute summary...');
@@ -456,8 +353,56 @@ function displaySummary(s) {
   `;
 }
 
+async function generateCustomerSuggestions() {
+  if (APP_STATE.processingCustomerSuggestion) return;
+  try {
+    APP_STATE.processingCustomerSuggestion = true;
+    Logger.info('Generating suggestions after customer speech...');
+    const recentTranscript = APP_STATE.transcript.segments.slice(-10).map(s => `${s.channel === 'mic' ? 'AGENT' : 'CUSTOMER'}: ${s.text}`).join('\n');
+    if (!recentTranscript) return;
+    
+    const response = await fetch(`${APP_STATE.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${await getAuthToken()}` },
+      body: JSON.stringify({
+        model: APP_STATE.qaModel,
+        messages: [
+          { role: 'system', content: 'You are a call center AI assistant. Provide helpful, professional suggestions.' },
+          { role: 'user', content: `Based on this recent call center conversation, suggest:\n1. 3-5 best next questions the agent should ask\n2. 3-5 suggested responses the agent can say\n\nRecent conversation:\n${recentTranscript}\n\nRespond in JSON format:\n{\n  "questions": ["...", "...", "..."],\n  "replies": ["...", "...", "..."]\n}` }
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.8
+      })
+    });
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const result = JSON.parse((await response.json()).choices[0].message.content);
+    displaySuggestions(result);
+    Logger.success('Suggestions generated');
+  } catch (error) {
+    Logger.error(`Suggestion generation failed: ${error.message}`);
+    bootstrapAlert({ body: `Suggestion generation failed: ${error.message}`, color: 'danger' });
+  } finally {
+    APP_STATE.processingCustomerSuggestion = false;
+  }
+}
+
+function displaySuggestions(s) {
+  $('nextQuestionsContent').innerHTML = s.questions?.length > 0 ? s.questions.map(q => `<div class="suggestion-item">${escapeHtml(q)}</div>`).join('') : '<p class="text-muted">No suggestions yet...</p>';
+  $('suggestedRepliesContent').innerHTML = s.replies?.length > 0 ? s.replies.map(r => `<div class="suggestion-item">${escapeHtml(r)}</div>`).join('') : '<p class="text-muted">No suggestions yet...</p>';
+}
+
+async function startBoth() {
+  try {
+    await startMicCapture();
+    await startSpeakerCapture();
+    bootstrapAlert({ body: 'Both audio channels started successfully', color: 'success' });
+  } catch (error) {
+    Logger.error(`Failed to start both channels: ${error.message}`);
+  }
+}
+
 function stopChannel(channel) {
-  const channels = channel === 'all' ? ['mic'] : [channel];
+  const channels = channel === 'all' ? ['mic', 'speaker'] : [channel];
   channels.forEach(ch => {
     ['Stream', 'Socket', 'Processor'].forEach(type => {
       const key = `${ch}${type}`;
@@ -480,37 +425,19 @@ document.addEventListener('DOMContentLoaded', () => {
   checkBrowserCompatibility();
   Logger.success('Call Center Copilot initialized');
   
-  if (window.speechSynthesis) {
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        Logger.info(`${voices.length} voices loaded`);
-        Logger.info(`Available languages: ${[...new Set(voices.map(v => v.lang.substring(0, 2)))].join(', ')}`);
-      }
-    };
-    
-    if (window.speechSynthesis.getVoices().length > 0) {
-      loadVoices();
-    }
-    
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-  } else {
-    Logger.warn('Speech synthesis not available in this browser');
-  }
-  
   $('config-btn').addEventListener('click', () => initLLM(true));
   $('model-select').addEventListener('change', e => APP_STATE.model = e.target.value);
   $('qa-model').addEventListener('change', e => APP_STATE.qaModel = e.target.value);
-  $('language-select').addEventListener('change', e => changeLanguage(e.target.value));
   $('startMicBtn').addEventListener('click', () => startMicCapture().catch(err => Logger.error(`Start mic failed: ${err.message}`)));
-  $('stopAllBtn').addEventListener('click', () => { stopChannel('all'); bootstrapAlert({ body: 'Audio stopped', color: 'info' }); });
+  $('startSpeakerBtn').addEventListener('click', () => startSpeakerCapture().catch(err => Logger.error(`Start speaker failed: ${err.message}`)));
+  $('startBothBtn').addEventListener('click', startBoth);
+  $('stopAllBtn').addEventListener('click', () => { stopChannel('all'); bootstrapAlert({ body: 'All audio channels stopped', color: 'info' }); });
   $('clearMicBtn').addEventListener('click', () => clearTranscript('mic'));
-  $('clearTranslationBtn').addEventListener('click', () => clearTranscript('translation'));
+  $('clearSpeakerBtn').addEventListener('click', () => clearTranscript('speaker'));
   $('askBtn').addEventListener('click', () => { askQuestion($('questionInput').value); $('questionInput').value = ''; });
   $('questionInput').addEventListener('keypress', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('askBtn').click(); } });
   $('enableSummaryToggle').addEventListener('change', e => toggleSummary(e.target.checked));
+  $('enableSuggestionsToggle').addEventListener('change', e => toggleSuggestions(e.target.checked));
 });
-
-window.speakText = speakText;
 
 window.addEventListener('beforeunload', () => stopChannel('all'));
