@@ -1,6 +1,26 @@
 import { openaiConfig } from "https://cdn.jsdelivr.net/npm/bootstrap-llm-provider@1.2";
 import { bootstrapAlert } from "https://cdn.jsdelivr.net/npm/bootstrap-alert@1";
 
+const LANGUAGES = [
+  { code: 'en', label: 'English', bcp47: 'en-US' },
+  { code: 'es', label: 'Spanish', bcp47: 'es-ES' },
+  { code: 'fr', label: 'French', bcp47: 'fr-FR' },
+  { code: 'de', label: 'German', bcp47: 'de-DE' },
+  { code: 'zh', label: 'Chinese', bcp47: 'zh-CN' },
+  { code: 'ar', label: 'Arabic', bcp47: 'ar-SA' },
+  { code: 'hi', label: 'Hindi', bcp47: 'hi-IN' },
+  { code: 'pt', label: 'Portuguese', bcp47: 'pt-BR' },
+  { code: 'ru', label: 'Russian', bcp47: 'ru-RU' },
+  { code: 'ja', label: 'Japanese', bcp47: 'ja-JP' },
+  { code: 'ko', label: 'Korean', bcp47: 'ko-KR' },
+  { code: 'it', label: 'Italian', bcp47: 'it-IT' },
+  { code: 'tr', label: 'Turkish', bcp47: 'tr-TR' },
+  { code: 'nl', label: 'Dutch', bcp47: 'nl-NL' },
+  { code: 'pl', label: 'Polish', bcp47: 'pl-PL' },
+  { code: 'uk', label: 'Ukrainian', bcp47: 'uk-UA' },
+  { code: 'ur', label: 'Urdu', bcp47: 'ur-PK' },
+];
+
 const APP_STATE = {
   apiKey: null, baseUrl: 'https://api.openai.com/v1', model: 'gpt-realtime-mini', qaModel: 'gpt-4o',
   micStream: null, speakerStream: null, micSocket: null, speakerSocket: null,
@@ -8,7 +28,9 @@ const APP_STATE = {
   micSessionId: null, speakerSessionId: null,
   transcript: { segments: [] },
   summaryInterval: null, lastCustomerSpeechTime: null, enableSummary: false, enableSuggestions: false,
-  processingCustomerSuggestion: false
+  processingCustomerSuggestion: false,
+  agentLang: 'en', customerLang: 'en', bothLang: 'en',
+  currentSpeech: null
 };
 
 const $ = id => document.getElementById(id);
@@ -164,19 +186,51 @@ async function connectRealtimeAPI(channel, mediaStream) {
   }
 }
 
+function ensureAudioContextRunning() {
+  const ctx = APP_STATE.audioContext;
+  if (ctx && ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+}
+
 function startAudioStreaming(channel, mediaStream, ws) {
-  if (!APP_STATE.audioContext) APP_STATE.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-  const source = APP_STATE.audioContext.createMediaStreamSource(mediaStream);
-  const processor = APP_STATE.audioContext.createScriptProcessor(4096, 1, 1);
+  if (!APP_STATE.audioContext || APP_STATE.audioContext.state === 'closed') {
+    APP_STATE.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    // Keep-alive oscillator: prevents browsers from auto-suspending idle AudioContext
+    const keepAliveOsc = APP_STATE.audioContext.createOscillator();
+    const keepAliveGain = APP_STATE.audioContext.createGain();
+    keepAliveGain.gain.value = 0; // silent
+    keepAliveOsc.connect(keepAliveGain);
+    keepAliveGain.connect(APP_STATE.audioContext.destination);
+    keepAliveOsc.start();
+    APP_STATE.keepAliveOsc = keepAliveOsc;
+    APP_STATE.keepAliveGain = keepAliveGain;
+  }
+  if (APP_STATE.audioContext.state === 'suspended') {
+    APP_STATE.audioContext.resume().catch(() => {});
+  }
+  const ctx = APP_STATE.audioContext;
+  const source = ctx.createMediaStreamSource(mediaStream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0;
   processor.onaudioprocess = e => {
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(convertToPCM16(e.inputBuffer.getChannelData(0))) }));
   };
   source.connect(processor);
-  processor.connect(APP_STATE.audioContext.destination);
+  processor.connect(silentGain);
+  silentGain.connect(ctx.destination);
   APP_STATE[`${channel}Processor`] = processor;
+  APP_STATE[`${channel}Source`] = source;
+  APP_STATE[`${channel}SilentGain`] = silentGain;
   Logger.info(`${channel} audio streaming started`);
 }
+
+// Resume AudioContext on user interaction to prevent browser suspension
+document.addEventListener('click', ensureAudioContextRunning, { passive: true });
+document.addEventListener('keydown', ensureAudioContextRunning, { passive: true });
 
 const convertToPCM16 = float32Array => {
   const pcm16 = new Int16Array(float32Array.length);
@@ -223,23 +277,161 @@ function handleTranscription(channel, event, isFinal) {
   Logger.success(`${channel} transcription: "${event.transcript}"`);
 }
 
+function makeSpeakButton(text, langBcp47) {
+  const btn = document.createElement('button');
+  btn.className = 'speak-btn';
+  btn.title = 'Speak this line';
+  btn.innerHTML = '<i class="bi bi-volume-up"></i>';
+  btn.addEventListener('click', () => speakText(text, langBcp47, btn));
+  return btn;
+}
+
+function speakText(text, langBcp47, btn) {
+  if (!window.speechSynthesis) return Logger.warn('Text-to-speech not supported in this browser');
+  if (APP_STATE.currentSpeech) {
+    window.speechSynthesis.cancel();
+    if (APP_STATE.currentSpeech === btn) {
+      btn.classList.remove('speaking');
+      APP_STATE.currentSpeech = null;
+      return;
+    }
+  }
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = langBcp47 || 'en-US';
+  utterance.rate = 1;
+  APP_STATE.currentSpeech = btn;
+  btn.classList.add('speaking');
+  utterance.onend = () => { btn.classList.remove('speaking'); if (APP_STATE.currentSpeech === btn) APP_STATE.currentSpeech = null; };
+  utterance.onerror = () => { btn.classList.remove('speaking'); if (APP_STATE.currentSpeech === btn) APP_STATE.currentSpeech = null; };
+  window.speechSynthesis.speak(utterance);
+}
+
+function buildTranscriptLine(channel, ts, text, langBcp47, labelPrefix) {
+  const line = document.createElement('div');
+  line.className = `transcript-line ${channel} final`;
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'timestamp';
+  timeSpan.textContent = new Date(ts).toLocaleTimeString();
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'text';
+  labelSpan.textContent = (labelPrefix ? labelPrefix + ' ' : '') + text;
+  line.appendChild(timeSpan);
+  line.appendChild(labelSpan);
+  line.appendChild(makeSpeakButton(text, langBcp47));
+  return line;
+}
+
 function displayTranscriptSegment(segment) {
   const container = $(`${segment.channel}Transcript`);
   const line = document.createElement('div');
   line.className = `transcript-line ${segment.channel} ${segment.final ? 'final' : 'partial'}`;
   line.dataset.itemId = segment.item_id;
-  line.innerHTML = `<span class="timestamp">${new Date(segment.ts).toLocaleTimeString()}</span><span class="text">${escapeHtml(segment.text)}</span>`;
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'timestamp';
+  timeSpan.textContent = new Date(segment.ts).toLocaleTimeString();
+  const textSpan = document.createElement('span');
+  textSpan.className = 'text';
+  textSpan.textContent = segment.text;
+  line.appendChild(timeSpan);
+  line.appendChild(textSpan);
+  line.appendChild(makeSpeakButton(segment.text, 'en-US'));
   container.appendChild(line);
   container.scrollTop = container.scrollHeight;
+
+  // Also send to translated panels
+  if (segment.final) {
+    addToTranslatedPanel(segment);
+  }
+}
+
+async function translateText(text, targetLangCode) {
+  if (targetLangCode === 'en') return text; // no translation needed if English
+  try {
+    const response = await fetch(`${APP_STATE.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${await getAuthToken()}` },
+      body: JSON.stringify({
+        model: APP_STATE.qaModel,
+        messages: [
+          { role: 'system', content: 'You are a professional translator. Translate the given text into the requested language. Return ONLY the translated text, no explanations.' },
+          { role: 'user', content: `Translate the following text to ${LANGUAGES.find(l => l.code === targetLangCode)?.label || targetLangCode}:\n\n${text}` }
+        ],
+        temperature: 0.3
+      })
+    });
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+  } catch (e) {
+    Logger.warn(`Translation failed: ${e.message}`);
+    return text;
+  }
+}
+
+async function addToTranslatedPanel(segment) {
+  const isAgent = segment.channel === 'mic';
+  const agentLang = APP_STATE.agentLang;
+  const customerLang = APP_STATE.customerLang;
+  const bothLang = APP_STATE.bothLang;
+
+  // Agent panel
+  if (isAgent) {
+    const langObj = LANGUAGES.find(l => l.code === agentLang) || LANGUAGES[0];
+    const translated = await translateText(segment.text, agentLang);
+    const container = $('agentTranslatedTranscript');
+    const line = buildTranscriptLine('mic', segment.ts, translated, langObj.bcp47, '');
+    container.appendChild(line);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  // Customer panel
+  if (!isAgent) {
+    const langObj = LANGUAGES.find(l => l.code === customerLang) || LANGUAGES[0];
+    const translated = await translateText(segment.text, customerLang);
+    const container = $('customerTranslatedTranscript');
+    const line = buildTranscriptLine('speaker', segment.ts, translated, langObj.bcp47, '');
+    container.appendChild(line);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  // Both panel
+  {
+    const langObj = LANGUAGES.find(l => l.code === bothLang) || LANGUAGES[0];
+    const translated = await translateText(segment.text, bothLang);
+    const container = $('bothTranslatedTranscript');
+    const label = isAgent ? '[AGENT]' : '[CUSTOMER]';
+    const line = buildTranscriptLine(segment.channel, segment.ts, translated, langObj.bcp47, label);
+    container.appendChild(line);
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function populateLanguageDropdowns() {
+  const options = LANGUAGES.map(l => `<option value="${l.code}">${l.label}</option>`).join('');
+  ['agentLangSelect', 'customerLangSelect', 'bothLangSelect'].forEach(id => {
+    $(id).innerHTML = options;
+    $(id).value = 'en';
+  });
 }
 
 function clearTranscript(channel) {
   if (channel === 'all') {
     APP_STATE.transcript.segments = [];
     $('micTranscript').innerHTML = $('speakerTranscript').innerHTML = '';
+    $('agentTranslatedTranscript').innerHTML = '';
+    $('customerTranslatedTranscript').innerHTML = '';
+    $('bothTranslatedTranscript').innerHTML = '';
   } else {
     APP_STATE.transcript.segments = APP_STATE.transcript.segments.filter(s => s.channel !== channel);
     $(`${channel}Transcript`).innerHTML = '';
+    if (channel === 'mic') {
+      $('agentTranslatedTranscript').innerHTML = '';
+      // Also remove agent entries from bothTranslatedTranscript
+      $('bothTranslatedTranscript').querySelectorAll('.transcript-line.mic').forEach(el => el.remove());
+    } else {
+      $('customerTranslatedTranscript').innerHTML = '';
+      $('bothTranslatedTranscript').querySelectorAll('.transcript-line.speaker').forEach(el => el.remove());
+    }
   }
   Logger.info(`Cleared ${channel} transcript`);
 }
@@ -404,19 +596,34 @@ async function startBoth() {
 function stopChannel(channel) {
   const channels = channel === 'all' ? ['mic', 'speaker'] : [channel];
   channels.forEach(ch => {
-    ['Stream', 'Socket', 'Processor'].forEach(type => {
+    // Disconnect audio nodes
+    ['Processor', 'Source', 'SilentGain'].forEach(type => {
       const key = `${ch}${type}`;
       if (APP_STATE[key]) {
-        if (type === 'Stream') APP_STATE[key].getTracks().forEach(t => t.stop());
-        else if (type === 'Socket') APP_STATE[key].close();
-        else APP_STATE[key].disconnect();
+        try { APP_STATE[key].disconnect(); } catch (_) {}
         APP_STATE[key] = null;
       }
     });
+    // Stop stream tracks
+    if (APP_STATE[`${ch}Stream`]) {
+      APP_STATE[`${ch}Stream`].getTracks().forEach(t => t.stop());
+      APP_STATE[`${ch}Stream`] = null;
+    }
+    // Close websocket
+    if (APP_STATE[`${ch}Socket`]) {
+      APP_STATE[`${ch}Socket`].close();
+      APP_STATE[`${ch}Socket`] = null;
+    }
     updateStatus(ch, 'Disconnected', 'secondary');
     Logger.info(`${ch} stopped`);
   });
-  if (channel === 'all' && APP_STATE.audioContext) { APP_STATE.audioContext.close(); APP_STATE.audioContext = null; }
+  // Only close audioContext when both channels are stopped
+  if (channel === 'all' && APP_STATE.audioContext) {
+    if (APP_STATE.keepAliveOsc) { try { APP_STATE.keepAliveOsc.stop(); APP_STATE.keepAliveOsc.disconnect(); } catch (_) {} APP_STATE.keepAliveOsc = null; }
+    if (APP_STATE.keepAliveGain) { try { APP_STATE.keepAliveGain.disconnect(); } catch (_) {} APP_STATE.keepAliveGain = null; }
+    APP_STATE.audioContext.close().catch(() => {});
+    APP_STATE.audioContext = null;
+  }
 }
 
 const updateStatus = (channel, text, variant) => { const el = $(`${channel}Status`); el.textContent = text; el.className = `badge bg-${variant} ms-2`; };
@@ -424,7 +631,9 @@ const updateStatus = (channel, text, variant) => { const el = $(`${channel}Statu
 document.addEventListener('DOMContentLoaded', () => {
   checkBrowserCompatibility();
   Logger.success('Call Center Copilot initialized');
-  
+
+  populateLanguageDropdowns();
+
   $('config-btn').addEventListener('click', () => initLLM(true));
   $('model-select').addEventListener('change', e => APP_STATE.model = e.target.value);
   $('qa-model').addEventListener('change', e => APP_STATE.qaModel = e.target.value);
@@ -434,6 +643,12 @@ document.addEventListener('DOMContentLoaded', () => {
   $('stopAllBtn').addEventListener('click', () => { stopChannel('all'); bootstrapAlert({ body: 'All audio channels stopped', color: 'info' }); });
   $('clearMicBtn').addEventListener('click', () => clearTranscript('mic'));
   $('clearSpeakerBtn').addEventListener('click', () => clearTranscript('speaker'));
+  $('clearAgentTranslatedBtn').addEventListener('click', () => { $('agentTranslatedTranscript').innerHTML = ''; Logger.info('Cleared agent translated transcript'); });
+  $('clearCustomerTranslatedBtn').addEventListener('click', () => { $('customerTranslatedTranscript').innerHTML = ''; Logger.info('Cleared customer translated transcript'); });
+  $('clearBothTranslatedBtn').addEventListener('click', () => { $('bothTranslatedTranscript').innerHTML = ''; Logger.info('Cleared both translated transcript'); });
+  $('agentLangSelect').addEventListener('change', e => { APP_STATE.agentLang = e.target.value; Logger.info(`Agent translated language set to ${e.target.value}`); });
+  $('customerLangSelect').addEventListener('change', e => { APP_STATE.customerLang = e.target.value; Logger.info(`Customer translated language set to ${e.target.value}`); });
+  $('bothLangSelect').addEventListener('change', e => { APP_STATE.bothLang = e.target.value; Logger.info(`Both translated language set to ${e.target.value}`); });
   $('askBtn').addEventListener('click', () => { askQuestion($('questionInput').value); $('questionInput').value = ''; });
   $('questionInput').addEventListener('keypress', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('askBtn').click(); } });
   $('enableSummaryToggle').addEventListener('change', e => toggleSummary(e.target.checked));

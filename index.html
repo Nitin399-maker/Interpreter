@@ -33,6 +33,11 @@
     .log-info { color: #4fc1ff; }
     .log-success { color: #6a9955; }
     [data-bs-theme="dark"] .log-console { background: #0d1117; border: 1px solid var(--bs-border-color); }
+    .transcript-line { display: flex; align-items: flex-start; gap: 0.4rem; }
+    .transcript-line .text { flex: 1; }
+    .speak-btn { flex-shrink: 0; background: none; border: none; padding: 0 0.2rem; cursor: pointer; color: var(--bs-secondary-color); font-size: 0.85rem; line-height: 1.4; }
+    .speak-btn:hover { color: var(--bs-primary); }
+    .speak-btn.speaking { color: #0dcaf0; }
   </style>
 </head>
 
@@ -139,7 +144,7 @@
 
     <div class="card mb-4">
       <div class="card-header">
-        <h5 class="mb-0"><i class="bi bi-file-text me-2"></i>Live Transcripts</h5>
+        <h5 class="mb-0"><i class="bi bi-file-text me-2"></i>Live Transcripts (Raw)</h5>
       </div>
       <div class="card-body">
         <div class="row">
@@ -156,6 +161,50 @@
               <button id="clearSpeakerBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
             </div>
             <div id="speakerTranscript" class="transcript-pane"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Translated Transcript Sections -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-translate me-2"></i>Translated Transcripts</h5>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="text-primary mb-0"><i class="bi bi-mic"></i> Agent (Translated)</h6>
+              <button id="clearAgentTranslatedBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
+            </div>
+            <div class="d-flex align-items-center mb-2 gap-2">
+              <label for="agentLangSelect" class="form-label mb-0">Lang:</label>
+              <select id="agentLangSelect" class="form-select form-select-sm" style="width:auto;"></select>
+            </div>
+            <div id="agentTranslatedTranscript" class="transcript-pane"></div>
+          </div>
+          <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="text-success mb-0"><i class="bi bi-speaker"></i> Customer (Translated)</h6>
+              <button id="clearCustomerTranslatedBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
+            </div>
+            <div class="d-flex align-items-center mb-2 gap-2">
+              <label for="customerLangSelect" class="form-label mb-0">Lang:</label>
+              <select id="customerLangSelect" class="form-select form-select-sm" style="width:auto;"></select>
+            </div>
+            <div id="customerTranslatedTranscript" class="transcript-pane"></div>
+          </div>
+          <div class="col-md-4">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="text-info mb-0"><i class="bi bi-people"></i> Both (Translated)</h6>
+              <button id="clearBothTranslatedBtn" class="btn btn-sm btn-outline-secondary">Clear</button>
+            </div>
+            <div class="d-flex align-items-center mb-2 gap-2">
+              <label for="bothLangSelect" class="form-label mb-0">Lang:</label>
+              <select id="bothLangSelect" class="form-select form-select-sm" style="width:auto;"></select>
+            </div>
+            <div id="bothTranslatedTranscript" class="transcript-pane"></div>
           </div>
         </div>
       </div>
